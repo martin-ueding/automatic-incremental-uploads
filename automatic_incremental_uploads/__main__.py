@@ -1,11 +1,19 @@
 import argparse
+import contextlib
 import pathlib
+import shutil
 import tomllib
+import subprocess
 
 import inotify.adapters
 import inotify.constants
-import paramiko
-import pysftp
+
+
+@contextlib.contextmanager
+def mount_remote(remote: str, local: str):
+    subprocess.run(["sshfs", remote, local], check=True)
+    yield
+    subprocess.run(["fusermount", "-u", local], check=True)
 
 
 def main() -> None:
@@ -16,44 +24,34 @@ def main() -> None:
     with open(options.config_path, "rb") as f:
         config = tomllib.load(f)
 
-    local_basedir = pathlib.Path(config["files"]["local_basedir"])
-    remote_basedir = pathlib.Path(config["files"]["remote_basedir"])
+    basedir = pathlib.Path(config["files"]["basedir"])
     include = pathlib.Path(config["files"]["include"])
 
     watcher = inotify.adapters.InotifyTree(
-        str(local_basedir / include),
+        str(basedir / include),
         mask=inotify.constants.IN_MODIFY | inotify.constants.IN_CREATE,
     )
 
-    agent = paramiko.Agent()
-    for key in agent.get_keys():
-        if key.get_name() == config["agent"]["name"]:
-            agent_key = key
+    mountpoint = pathlib.Path(config["connection"]["mountpoint"])
 
     print("Watches established.")
-    with pysftp.Connection(
-        cnopts=pysftp.CnOpts(
-            **config["cn_opts"],
-        ),
-        private_key=agent_key,
-        **config["server"],
-    ) as sftp:
-        print("SFTP connection established.")
+    with mount_remote(config["connection"]["remote"], str(mountpoint)):
+        print("SSH FS connection established.")
         for _, event_types, path, filename in watcher.event_gen(yield_nones=False):
-            file_path = pathlib.Path(path) / filename
-            if not file_path.exists():
+            source = pathlib.Path(path) / filename
+            if not source.exists():
                 continue
 
-            relpath = file_path.relative_to(local_basedir)
-            print(f"{file_path = }, {event_types = }, {relpath = }")
+            relpath = source.relative_to(basedir)
+            target = mountpoint / relpath
 
-            print(f"Changing into {relpath.parent = }")
-            with sftp.cd(str(relpath.parent)):
-                if file_path.exists():
-                    print(f"Uploading file {relpath = }")
-                    sftp.put(relpath)
-                    print("Done with upload.")
-            print("Back in directory.")
+            try:
+                print(f"Copying {source} to {target} …")
+                shutil.copy2(source, target)
+                print(f"Copied {source} to target.")
+            except FileNotFoundError as e:
+                print(f"File {source} has vanished, deleting on target.")
+                target.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
