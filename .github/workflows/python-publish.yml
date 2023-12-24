@@ -13,7 +13,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Publish python poetry package
-        uses: JRubics/poetry-publish@v1.17
-        with:
-          pypi_token: ${{ secrets.PYPI_TOKEN }}
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.x'
+    - name: Publish python poetry package
+      uses: JRubics/poetry-publish@v1.17
+      with:
+        pypi_token: ${{ secrets.PYPI_TOKEN }}
